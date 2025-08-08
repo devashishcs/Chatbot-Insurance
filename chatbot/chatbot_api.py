@@ -52,26 +52,35 @@ class InsuranceChatbotAPI:
         
         extraction_prompt = ChatPromptTemplate.from_messages([
             SystemMessage(content="""You are an information extraction assistant. 
-            Extract the user's age and insurance type from their message.
+            Extract the user's age, insurance type, and who the insurance is for from their message.
             
-            Return ONLY a JSON object with this format:
-            {"age": number_or_null, "insurance_type": "health/life/auto_or_null"}
+            Return ONLY a JSON object in this format:
+            {
+                "age": number_or_null,
+                "insurance_type": "health/life/auto_or_null",
+                "insured_for": "self/spouse/child/parent_or_null"
+            }
             
             Examples:
-            - "I'm 25 and need health insurance" -> {"age": 25, "insurance_type": "health"}
-            - "Looking for car insurance" -> {"age": null, "insurance_type": "auto"}
-            - "I need insurance" -> {"age": null, "insurance_type": null}"""),
+            - "I'm 25 and need health insurance" -> {"age": 25, "insurance_type": "health", "insured_for": "self"}
+            - "Looking for car insurance for my father" -> {"age": null, "insurance_type": "auto", "insured_for": "parent"}
+            - "My wife needs life insurance, she's 30" -> {"age": 30, "insurance_type": "life", "insured_for": "spouse"}
+            - "I need insurance" -> {"age": null, "insurance_type": null, "insured_for": null}"""),
             HumanMessage(content=f"Extract from: {user_message}")
         ])
         
         try:
             llm_response = await self.llm.ainvoke(extraction_prompt.format_messages())
             extracted_data = json.loads(llm_response.content)
+            print("LLM extraction response:", extracted_data)
             if extracted_data["age"] is not None:
                 state["user_age"] = extracted_data["age"]
 
             if extracted_data["insurance_type"] is not None:
                 state["insurance_type"] = extracted_data["insurance_type"]
+
+            if extracted_data["insured_for"] is not None:
+                state["insured_for"] = extracted_data["insured_for"]
             
                 
         except (json.JSONDecodeError, Exception):
@@ -84,12 +93,18 @@ class InsuranceChatbotAPI:
             missing_info.append("age")
         if not state.get("insurance_type"):
             missing_info.append("insurance_type")
+        if not state.get("insured_for"):
+            missing_info.append("insured_for")
+
         state["missing_info"] = missing_info
+        print("Extracted state:", state)
         return state
     
     def _should_collect_info(self, state: ChatbotState) -> str:
         """Decide next step based on available information"""
         missing_info = []
+        if not state.get("insured_for"):
+            missing_info.append("insured_for")
         if not state.get("user_age"):
             missing_info.append("age")
         if not state.get("insurance_type"):
@@ -121,11 +136,13 @@ class InsuranceChatbotAPI:
                 2. DO NOT ask about coverage details, family members, medical conditions, etc.
                 3. Keep it simple and direct
                 4. Available insurance types: health, life, auto
+                5. Insured for options: self, spouse, child, parent
                 5. Only ask for the missing information, nothing else!
                 
                 Current user info:
                 - Age: {state.get('user_age', 'unknown')}
-                - Insurance type: {state.get('insurance_type', 'unknown')}"""),
+                - Insurance type: {state.get('insurance_type', 'unknown')}
+                - Insured For: {state.get('insured_for', 'unknown')}"""),
                 HumanMessage(content=f"""
                 Missing information that I need: {', '.join(missing_info)}
                 
@@ -175,12 +192,12 @@ class InsuranceChatbotAPI:
         relevant_docs = state["relevant_docs"]
         user_age = state["user_age"]
         insurance_type = state["insurance_type"]
-        
+        insured_for = state["insured_for"]
         if not relevant_docs:
             try:
                 no_results_prompt = ChatPromptTemplate.from_messages([
                     SystemMessage(content="You are a helpful insurance assistant. Generate a polite response when no insurance options are found."),
-                    HumanMessage(content=f"No insurance options found for {insurance_type} insurance for age {user_age}. Suggest contacting support.")
+                    HumanMessage(content=f"No insurance options found for {insured_for} {insurance_type} insurance for age {user_age}. Suggest contacting support.")
                 ])
                 llm_response = await self.llm.ainvoke(no_results_prompt.format_messages())
                 response = llm_response.content
@@ -191,6 +208,7 @@ class InsuranceChatbotAPI:
             
             insurance_info = f"""
             Insurance Type: {insurance_type.title()}
+            Insured For: {insured_for.title()}
             Age: {user_age}
             Premium: {doc_data.get('premium', 'Contact for quote')}
             Coverage: {doc_data.get('coverage', 'Standard coverage')}
@@ -252,7 +270,8 @@ Would you like more details about this plan or have any questions? 😊"""
                 relevant_docs=[],
                 missing_info=[],
                 conversation_stage="start",
-                last_response=""
+                last_response="",
+                insured_for= None
             )
         
         state["messages"].append({"role": "user", "content": user_input})

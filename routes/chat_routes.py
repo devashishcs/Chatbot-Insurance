@@ -25,7 +25,8 @@ def start_conversation():
             relevant_docs=[],
             missing_info=[],
             conversation_stage="start",
-            last_response=""
+            last_response="",
+            insured_for=None
         ),
         "created_at": datetime.now(),
         "last_activity": datetime.now()
@@ -75,7 +76,8 @@ async def chat_message(conversation_id):
             "conversation_id": conversation_id,
             "user_info": {
                 "age": updated_state.get("user_age"),
-                "insurance_type": updated_state.get("insurance_type")
+                "insurance_type": updated_state.get("insurance_type"),
+                "insured_for": updated_state.get("insured_for")
             },
             "status": "success"
         })

@@ -9,3 +9,4 @@ class ChatbotState(TypedDict):
     missing_info: List[str]
     conversation_stage: str
     last_response: str
+    insured_for: Optional[str]
