@@ -4,6 +4,7 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from langchain_groq import ChatGroq
 from config import Config
+import textwrap
 import json
 import re
 from langchain_core.prompts import ChatPromptTemplate
@@ -26,6 +27,7 @@ class InsuranceChatbotAPI:
         graph.add_node("ask_followup_with_llm", self._ask_followup_with_llm)
         graph.add_node("search_documents", self._search_documents)
         graph.add_node("generate_response_with_llm", self._generate_response_with_llm)
+        graph.add_node("generate_suggestion_with_llm", self._generate_suggestion_with_llm)
         
         # Define edges
         graph.add_conditional_edges(
@@ -33,39 +35,74 @@ class InsuranceChatbotAPI:
             self._should_collect_info,
             {
                 "collect_info": "ask_followup_with_llm",
-                "search_docs": "search_documents"
+                "search_docs": "search_documents",
+                "generate_suggestion_with_llm": "generate_suggestion_with_llm"
             }
         )
         
         graph.add_edge("ask_followup_with_llm", END)
         graph.add_edge("search_documents", "generate_response_with_llm")
         graph.add_edge("generate_response_with_llm", END)
-        
+        graph.add_edge("generate_suggestion_with_llm", END)
         # Set entry point
         graph.set_entry_point("extract_info_with_llm")
         
         return graph.compile()
+    async def _generate_suggestion_with_llm(self, state: ChatbotState) -> ChatbotState:
+        """Generate recommendations or comparisons based on existing insurance plans."""
+        relevant_docs = state.get("relevant_docs", [])
+        user_age = state.get("user_age")
+        insurance_type = state.get("insurance_type")
+        insured_for = state.get("insured_for")
+
+        suggestion_prompt = ChatPromptTemplate.from_messages([
+            SystemMessage(content="""You are an expert insurance advisor.
+            Based on the given plans, suggest the best choice, explain why, 
+            and include pros/cons in bullet points. Be friendly and clear."""),
+            HumanMessage(content=f"""
+            User Info:
+            Age: {user_age}
+            Insurance Type: {insurance_type}
+            Insured For: {insured_for}
+
+            Plans:
+            {json.dumps(relevant_docs, indent=2)}
+            """)
+        ])
+
+        llm_response = await self.llm.ainvoke(suggestion_prompt.format_messages())
+        response = llm_response.content
+
+        state["last_response"] = response
+        state["messages"].append({"role": "assistant", "content": response})
+        return state
     
     async def _extract_info_with_llm(self, state: ChatbotState) -> ChatbotState:
         """Use LLM to extract age and insurance type from user message"""
         user_message = state["user_query"]
         
         extraction_prompt = ChatPromptTemplate.from_messages([
-            SystemMessage(content="""You are an information extraction assistant. 
-            Extract the user's age, insurance type, and who the insurance is for from their message.
-            
-            Return ONLY a JSON object in this format:
-            {
-                "age": number_or_null,
-                "insurance_type": "health/life/auto_or_null",
-                "insured_for": "self/spouse/child/parent_or_null"
-            }
-            
-            Examples:
-            - "I'm 25 and need health insurance" -> {"age": 25, "insurance_type": "health", "insured_for": "self"}
-            - "Looking for car insurance for my father" -> {"age": null, "insurance_type": "auto", "insured_for": "parent"}
-            - "My wife needs life insurance, she's 30" -> {"age": 30, "insurance_type": "life", "insured_for": "spouse"}
-            - "I need insurance" -> {"age": null, "insurance_type": null, "insured_for": null}"""),
+            SystemMessage(content="""You are an intent and information extraction assistant.
+
+        Return ONLY a JSON object with this format:
+        {
+            "age": number_or_null,
+            "insurance_type": "health" | "life" | "auto" | null,
+            "insured_for": "self" | "spouse" | "child" | "parent" | null,
+            "intent": "get_insurance_info" | "ask_suggestion" | "other"
+        }
+
+        Rules:
+        - "get_insurance_info": User is giving info or asking for an insurance plan.
+        - "ask_suggestion": User is asking for advice, recommendation, or comparison based on existing info.
+        - "other": Anything unrelated to insurance.
+
+        Examples:
+        - "I'm 25 and need health insurance" -> {"age": 25, "insurance_type": "health", "insured_for": "self", "intent": "get_insurance_info"}
+        - "Looking for car insurance for my father" -> {"age": null, "insurance_type": "auto", "insured_for": "parent", "intent": "get_insurance_info"}
+        - "My wife needs life insurance, she's 30" -> {"age": 30, "insurance_type": "life", "insured_for": "spouse", "intent": "get_insurance_info"}
+        - "What do you suggest?" -> {"age": null, "insurance_type": null, "insured_for": null, "intent": "ask_suggestion"}
+        - "Tell me a joke" -> {"age": null, "insurance_type": null, "insured_for": null, "intent": "other"}"""),
             HumanMessage(content=f"Extract from: {user_message}")
         ])
         
@@ -82,7 +119,7 @@ class InsuranceChatbotAPI:
             if extracted_data["insured_for"] is not None:
                 state["insured_for"] = extracted_data["insured_for"]
             
-                
+            state["intent"] = extracted_data["intent"]
         except (json.JSONDecodeError, Exception):
             # Fallback to regex if LLM fails
             age_match = re.search(r'\b(\d{1,2})\b', user_message)
@@ -97,7 +134,6 @@ class InsuranceChatbotAPI:
             missing_info.append("insured_for")
 
         state["missing_info"] = missing_info
-        print("Extracted state:", state)
         return state
     
     def _should_collect_info(self, state: ChatbotState) -> str:
@@ -111,11 +147,13 @@ class InsuranceChatbotAPI:
             missing_info.append("insurance_type")
         
         state["missing_info"] = missing_info
-        print("Collect info state for missing:", state)
-        if missing_info:
-            return "collect_info"
-        else:
+       
+        if not missing_info:
+            if state.get("intent") == "ask_suggestion" and state.get("relevant_docs"):
+                return "generate_suggestion_with_llm"
             return "search_docs"
+    
+        return "collect_info"
     
     async def _ask_followup_with_llm(self, state) -> ChatbotState:
 
@@ -176,15 +214,19 @@ class InsuranceChatbotAPI:
         age_bracket = self._get_age_bracket(age, insurance_type)
         
         relevant_docs = []
-        if insurance_type in INSURANCE_DATABASE and age_bracket in INSURANCE_DATABASE[insurance_type]:
-            doc = INSURANCE_DATABASE[insurance_type][age_bracket]
-            relevant_docs.append({
-                "insurance_type": insurance_type,
-                "age_bracket": age_bracket,
-                "data": doc
-            })
-        
+        if insurance_type in INSURANCE_DATABASE:
+            for plan_tier, plans_by_age in INSURANCE_DATABASE[insurance_type].items():
+                if age_bracket in plans_by_age:
+                    doc = plans_by_age[age_bracket]
+                    relevant_docs.append({
+                        "insurance_type": insurance_type,
+                        "plan_tier": plan_tier,
+                        "age_bracket": age_bracket,
+                        "data": doc
+                    })
+
         state["relevant_docs"] = relevant_docs
+        # print("Relevant documents found:", relevant_docs)
         return state
     
     async def _generate_response_with_llm(self, state: ChatbotState) -> ChatbotState:
@@ -204,26 +246,38 @@ class InsuranceChatbotAPI:
             except Exception:
                 response = f"I apologize, but I couldn't find specific {insurance_type} insurance options for your age group. Please contact our support team for personalized assistance."
         else:
-            doc_data = relevant_docs[0]["data"]
-            
-            insurance_info = f"""
-            Insurance Type: {insurance_type.title()}
-            Insured For: {insured_for.title()}
-            Age: {user_age}
-            Premium: {doc_data.get('premium', 'Contact for quote')}
-            Coverage: {doc_data.get('coverage', 'Standard coverage')}
-            Deductible: {doc_data.get('deductible', 'N/A')}
-            """
+            all_insurance_info = []
+
+            for doc in relevant_docs:
+                doc_data = doc["data"]
+                insurance_info = f"""
+                Insurance Type: {insurance_type.title()}
+                Plan Tier: {doc.get('plan_tier', 'N/A')}
+                Insured For: {insured_for.title()}
+                Age: {user_age}
+                Premium: {doc_data.get('premium', 'Contact for quote')}
+                Coverage: {doc_data.get('coverage', 'Standard coverage')}
+                Deductible: {doc_data.get('deductible', 'N/A')}
+                Network Hospitals: {doc_data.get('network_hospitals', 'N/A')}
+                Cashless: {'Yes' if doc_data.get('cashless', False) else 'No'}
+                Waiting Period: {doc_data.get('waiting_period', 'N/A')}
+                Exclusions: {', '.join(doc_data.get('exclusions', [])) if doc_data.get('exclusions') else 'None'}
+                Add-ons: {', '.join(doc_data.get('add_ons', [])) if doc_data.get('add_ons') else 'None'}
+                """
+                all_insurance_info.append(textwrap.dedent(insurance_info))
+
+            # Join them into one string
+            final_output = "\n" + "-"*40 + "\n".join(all_insurance_info)
             
             try:
                 response_prompt = ChatPromptTemplate.from_messages([
                     SystemMessage(content="""You are a helpful insurance assistant. 
-                    Present insurance information in a friendly, well-formatted way using emojis and clear structure.
+                    Present the list of insurance information in a friendly, well-formatted way using emojis and clear structure.
                     Be enthusiastic but professional."""),
                     HumanMessage(content=f"""
                     Present this insurance information to the user:
-                    {insurance_info}
-                    
+                    {final_output}
+                    If there are multiple options at the end summarize them and compare them.
                     Make it engaging and ask if they want more details.
                     """)
                 ])
@@ -271,7 +325,8 @@ Would you like more details about this plan or have any questions? 😊"""
                 missing_info=[],
                 conversation_stage="start",
                 last_response="",
-                insured_for= None
+                insured_for= None,
+                intent=None
             )
         
         state["messages"].append({"role": "user", "content": user_input})

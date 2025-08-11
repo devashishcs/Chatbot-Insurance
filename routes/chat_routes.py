@@ -26,7 +26,8 @@ def start_conversation():
             missing_info=[],
             conversation_stage="start",
             last_response="",
-            insured_for=None
+            insured_for=None,
+            intent=None  # Initialize intent as None
         ),
         "created_at": datetime.now(),
         "last_activity": datetime.now()
