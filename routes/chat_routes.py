@@ -27,7 +27,8 @@ def start_conversation():
             conversation_stage="start",
             last_response="",
             insured_for=None,
-            intent=None  # Initialize intent as None
+            intent=None, # Initialize intent as None
+            greeting_detected=False  # Initialize greeting_detected as False
         ),
         "created_at": datetime.now(),
         "last_activity": datetime.now()
@@ -78,7 +79,8 @@ async def chat_message(conversation_id):
             "user_info": {
                 "age": updated_state.get("user_age"),
                 "insurance_type": updated_state.get("insurance_type"),
-                "insured_for": updated_state.get("insured_for")
+                "insured_for": updated_state.get("insured_for"),
+                "intent": updated_state.get("intent")
             },
             "status": "success"
         })

@@ -11,3 +11,4 @@ class ChatbotState(TypedDict):
     last_response: str
     insured_for: Optional[str]
     intent: Optional[str]  # Added to track user intent
+    greeting_detected: bool = False  # Track if greeting was detected

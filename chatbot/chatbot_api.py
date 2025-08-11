@@ -25,6 +25,7 @@ class InsuranceChatbotAPI:
         # Add nodes
         graph.add_node("extract_info_with_llm", self._extract_info_with_llm)
         graph.add_node("ask_followup_with_llm", self._ask_followup_with_llm)
+        graph.add_node("acknowledge_greeting", self._acknowledge_greeting)
         graph.add_node("search_documents", self._search_documents)
         graph.add_node("generate_response_with_llm", self._generate_response_with_llm)
         graph.add_node("generate_suggestion_with_llm", self._generate_suggestion_with_llm)
@@ -35,12 +36,14 @@ class InsuranceChatbotAPI:
             self._should_collect_info,
             {
                 "collect_info": "ask_followup_with_llm",
+                "acknowledge_greeting": "acknowledge_greeting",
                 "search_docs": "search_documents",
                 "generate_suggestion_with_llm": "generate_suggestion_with_llm"
             }
         )
         
         graph.add_edge("ask_followup_with_llm", END)
+        graph.add_edge("acknowledge_greeting", END)  # ← ADD THIS
         graph.add_edge("search_documents", "generate_response_with_llm")
         graph.add_edge("generate_response_with_llm", END)
         graph.add_edge("generate_suggestion_with_llm", END)
@@ -48,6 +51,55 @@ class InsuranceChatbotAPI:
         graph.set_entry_point("extract_info_with_llm")
         
         return graph.compile()
+    
+    ##To Do- working on this changd in should_collect_info and also in nodes and edges.
+    async def _acknowledge_greeting(self, state: ChatbotState) -> ChatbotState:
+        """Handle greetings with engaging follow-up options"""
+        user_age = state.get("user_age")
+        insurance_type = state.get("insurance_type", "").title()
+        insured_for = state.get("insured_for", "")
+        
+        # Create engaging response with options
+        greeting_prompt = ChatPromptTemplate.from_messages([
+            SystemMessage(content=f"""You are a friendly insurance assistant. 
+            The user just greeted you and you have their complete info:
+            - Age: {user_age}
+            - Insurance Type: {insurance_type}
+            - Insured For: {insured_for}
+            
+            Generate an engaging greeting that:
+            1. Acknowledges them warmly
+            2. Confirms their info briefly
+            3. Offers 2-3 specific next steps like:
+            - "Would you like to see available plans?"
+            - "Should I recommend the best options for you?"
+            - "Do you want to compare different coverage levels?"
+            
+            Keep it friendly, concise, and action-oriented."""),
+            HumanMessage(content="Generate engaging greeting with options")
+        ])
+        
+        try:
+            llm_response = await self.llm.ainvoke(greeting_prompt.format_messages())
+            response = llm_response.content
+        except Exception:
+            # Fallback engaging response
+            response = f"""Hello! 👋 Great to meet you! 
+
+    I see you're looking for {insurance_type.lower()} insurance for your {insured_for}, age {user_age}. 
+
+    What would you like me to help you with?
+    🔍 **See available plans** for your profile
+    💡 **Get personalized recommendations** 
+    📊 **Compare different coverage options**
+
+    Just let me know what interests you most!"""
+        
+        state["last_response"] = response
+        state["messages"].append({"role": "assistant", "content": response})
+        return state
+    
+
     async def _generate_suggestion_with_llm(self, state: ChatbotState) -> ChatbotState:
         """Generate recommendations or comparisons based on existing insurance plans."""
         relevant_docs = state.get("relevant_docs", [])
@@ -96,13 +148,15 @@ class InsuranceChatbotAPI:
         - "get_insurance_info": User is giving info or asking for an insurance plan.
         - "ask_suggestion": User is asking for advice, recommendation, or comparison based on existing info.
         - "other": Anything unrelated to insurance.
+        - "greet": If the user says "hi", "hello", etc.
 
         Examples:
         - "I'm 25 and need health insurance" -> {"age": 25, "insurance_type": "health", "insured_for": "self", "intent": "get_insurance_info"}
         - "Looking for car insurance for my father" -> {"age": null, "insurance_type": "auto", "insured_for": "parent", "intent": "get_insurance_info"}
         - "My wife needs life insurance, she's 30" -> {"age": 30, "insurance_type": "life", "insured_for": "spouse", "intent": "get_insurance_info"}
         - "What do you suggest?" -> {"age": null, "insurance_type": null, "insured_for": null, "intent": "ask_suggestion"}
-        - "Tell me a joke" -> {"age": null, "insurance_type": null, "insured_for": null, "intent": "other"}"""),
+        - "Tell me a joke" -> {"age": null, "insurance_type": null, "insured_for": null, "intent": "other"}
+        - "If Greetings {"age": null, "insurance_type": null, "insured_for": null, "intent": "greet"}"""),
             HumanMessage(content=f"Extract from: {user_message}")
         ])
         
@@ -147,20 +201,31 @@ class InsuranceChatbotAPI:
             missing_info.append("insurance_type")
         
         state["missing_info"] = missing_info
-       
+        ## greeting detection with missing info
+        if state.get("intent") == "greet":
+            state["greeting_detected"] = True
+            if missing_info:
+                # Greeting with missing info - collect info but acknowledge greeting
+                return "collect_info"
+            else:
+                # Pure greeting with all info available - acknowledge and prompt
+                return "acknowledge_greeting"
+        
+        # Normal flow for non-greetings
         if not missing_info:
             if state.get("intent") == "ask_suggestion" and state.get("relevant_docs"):
                 return "generate_suggestion_with_llm"
             return "search_docs"
-    
+
         return "collect_info"
-    
+    ## to do - working on this only greet part how may i assist you one!
     async def _ask_followup_with_llm(self, state) -> ChatbotState:
 
         """Use LLM to generate natural follow-up questions"""
         print("state in follow up:", state)
         missing_info = state.get("missing_info", [])
         conversation_history = state.get("messages", [])
+        intent = state.get("intent")
         history_text = "\n".join([
             f"{msg['role']}: {msg['content']}" 
             for msg in conversation_history[-3:]
@@ -175,15 +240,19 @@ class InsuranceChatbotAPI:
                 3. Keep it simple and direct
                 4. Available insurance types: health, life, auto
                 5. Insured for options: self, spouse, child, parent
-                5. Only ask for the missing information, nothing else!
-                
+                6. Only ask for the missing information, nothing else!
+                7. If the intent is "greet" and there's missing info, acknowledge greeting and ask for missing info.
+               
                 Current user info:
                 - Age: {state.get('user_age', 'unknown')}
                 - Insurance type: {state.get('insurance_type', 'unknown')}
                 - Insured For: {state.get('insured_for', 'unknown')}"""),
                 HumanMessage(content=f"""
                 Missing information that I need: {', '.join(missing_info)}
+                Intent: {intent}
                 
+                Conversation history:
+                {history_text}
                 Generate a simple, direct question asking ONLY for the missing information.
                 Do not ask about anything else!""")
         ])
@@ -326,7 +395,8 @@ Would you like more details about this plan or have any questions? 😊"""
                 conversation_stage="start",
                 last_response="",
                 insured_for= None,
-                intent=None
+                intent=None,
+                greeting_detected=False  # Initialize greeting_detected as False
             )
         
         state["messages"].append({"role": "user", "content": user_input})
