@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, MessageCircle, Shield, Heart, Car, User, Bot, X, Minimize2 } from 'lucide-react';
+import { Send, MessageCircle, Shield, Heart, Car, User, Bot, X, Users, Baby, UserCheck } from 'lucide-react';
 import './App.css';
 const App = () => {
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -11,6 +11,14 @@ const App = () => {
   const messagesEndRef = useRef(null);
   const [conversationId, setConversationId] = useState(null);
   const inputRef = useRef(null);
+  
+  // Insurance selection state
+  const [currentStep, setCurrentStep] = useState(1); // 1: who, 2: age, 3: type
+  const [insuranceData, setInsuranceData] = useState({
+    forWhom: '',
+    age: '',
+    type: ''
+  });
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -20,7 +28,6 @@ const App = () => {
     scrollToBottom();
   }, [messages]);
 
-  // Auto-focus input when chat opens
   useEffect(() => {
     if (isChatOpen && inputRef.current) {
       setTimeout(() => inputRef.current?.focus(), 100);
@@ -32,7 +39,6 @@ const App = () => {
     
     setIsLoading(true);
     try {
-      // Call start API endpoint
       const response = await fetch('http://127.0.0.1:5000/api/chat/start', {
         method: 'POST',
         headers: {
@@ -45,23 +51,25 @@ const App = () => {
       const welcomeMessage = {
         id: 1,
         role: 'assistant',
-        content: data.message || 'Hello! 👋 I\'m here to help you find the perfect insurance plan. What type of coverage are you looking for today?',
+        content: 'Hello! 👋 I\'m here to help you find the perfect insurance plan. Let\'s start by knowing who needs insurance coverage.',
         timestamp: new Date()
       };
 
       setMessages([welcomeMessage]);
       setChatState(data.state);
       setHasStarted(true);
+      setCurrentStep(1);
     } catch (error) {
       console.error('Error starting chat:', error);
       const errorMessage = {
         id: 1,
         role: 'assistant',
-        content: 'Hello! 👋 I\'m here to help you find the perfect insurance plan. What type of coverage are you looking for today?',
+        content: 'Hello! 👋 I\'m here to help you find the perfect insurance plan. Let\'s start by knowing who needs insurance coverage.',
         timestamp: new Date()
       };
       setMessages([errorMessage]);
       setHasStarted(true);
+      setCurrentStep(1);
     } finally {
       setIsLoading(false);
     }
@@ -78,8 +86,93 @@ const App = () => {
     setIsChatOpen(false);
   };
 
+  const handleStepSelection = async (selection, step) => {
+    // Add user message
+    const userMessage = {
+      id: messages.length + 1,
+      role: 'user',
+      content: selection,
+      timestamp: new Date()
+    };
+    setMessages(prev => [...prev, userMessage]);
+
+    // Update insurance data
+    const updatedData = { ...insuranceData };
+    if (step === 1) updatedData.forWhom = selection;
+    else if (step === 2) updatedData.age = selection;
+    else if (step === 3) updatedData.type = selection;
+    
+    setInsuranceData(updatedData);
+    setIsLoading(true);
+
+    // Determine next step and bot response
+    let botResponse = '';
+    let nextStep = step + 1;
+
+    if (step === 1) {
+      botResponse = `Great! You've selected insurance for ${selection}. Now, please let me know the age range.`;
+    } else if (step === 2) {
+      botResponse = `Perfect! Age range: ${selection}. Now, what type of insurance are you looking for?`;
+    } else if (step === 3) {
+      botResponse = `Excellent! Let me process your request:\n\n• For: ${updatedData.forWhom}\n• Age: ${updatedData.age}\n• Type: ${selection}\n\nI'm now finding the best insurance options for you...`;
+      nextStep = 4; // Complete
+      
+      // Send complete data to backend
+      // Send complete data to backend as natural language
+    try {
+      // Convert selections to natural language for LLM extraction
+      let naturalMessage = '';
+      const ageNumber = updatedData.age.split('-')[0]; // Get first number from age range
+      
+      if (updatedData.forWhom === 'Myself') {
+        naturalMessage = `I'm ${ageNumber} years old and need ${selection.toLowerCase()}`;
+      } else if (updatedData.forWhom === 'My Spouse') {
+        naturalMessage = `My spouse is ${ageNumber} years old and needs ${selection.toLowerCase()}`;
+      } else if (updatedData.forWhom === 'My Child') {
+        naturalMessage = `My child is ${ageNumber} years old and needs ${selection.toLowerCase()}`;
+      } else if (updatedData.forWhom === 'My Family') {
+        naturalMessage = `My family needs ${selection.toLowerCase()}, age range ${updatedData.age}`;
+      } else if (updatedData.forWhom === 'My Parents') {
+        naturalMessage = `My parents need ${selection.toLowerCase()}, they are ${ageNumber}+ years old`;
+      }
+
+      const response = await fetch(`http://127.0.0.1:5000/api/chat/${conversationId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: naturalMessage,
+          state: chatState
+        })
+      });
+
+        const data = await response.json();
+        botResponse = data.response || botResponse;
+        setChatState(data.state);
+      } catch (error) {
+        console.error('Error sending data to backend:', error);
+        botResponse += '\n\nI\'ll help you find suitable options based on your requirements.';
+      }
+    }
+
+    // Add bot response
+    const botMessage = {
+      id: messages.length + 2,
+      role: 'assistant',
+      content: botResponse,
+      timestamp: new Date()
+    };
+
+    setTimeout(() => {
+      setMessages(prev => [...prev, botMessage]);
+      setCurrentStep(nextStep);
+      setIsLoading(false);
+    }, 1000);
+  };
+
   const sendMessage = async () => {
-    if (!inputMessage.trim() || isLoading) return;
+    if (!inputMessage.trim() || isLoading || currentStep <= 3) return;
 
     const newUserMessage = {
       id: messages.length + 1,
@@ -100,7 +193,8 @@ const App = () => {
         },
         body: JSON.stringify({
           message: inputMessage,
-          state: chatState
+          state: chatState,
+          insuranceData: insuranceData
         })
       });
 
@@ -136,16 +230,30 @@ const App = () => {
     }
   };
 
-  const quickActions = [
-    { icon: Heart, label: 'Health Insurance', message: "I'm interested in health insurance" },
-    { icon: Shield, label: 'Life Insurance', message: "I'm looking for life insurance" },
-    { icon: Car, label: 'Auto Insurance', message: "I need auto insurance" }
+  // Step 1: Who needs insurance
+  const whoOptions = [
+    { icon: User, label: 'Myself', value: 'Myself' },
+    { icon: Heart, label: 'My Spouse', value: 'My Spouse' },
+    { icon: Baby, label: 'My Child', value: 'My Child' },
+    { icon: Users, label: 'My Family', value: 'My Family' },
+    { icon: UserCheck, label: 'My Parents', value: 'My Parents' }
   ];
 
-  const handleQuickAction = (message) => {
-    setInputMessage(message);
-    setTimeout(() => sendMessage(), 100);
-  };
+  // Step 2: Age ranges
+  const ageOptions = [
+    { label: '0-18 years', value: '0-18 years' },
+    { label: '19-30 years', value: '19-30 years' },
+    { label: '31-45 years', value: '31-45 years' },
+    { label: '46-60 years', value: '46-60 years' },
+    { label: '60+ years', value: '60+ years' }
+  ];
+
+  // Step 3: Insurance types
+  const insuranceTypes = [
+    { icon: Heart, label: 'Health Insurance', value: 'Health Insurance' },
+    { icon: Shield, label: 'Life Insurance', value: 'Life Insurance' },
+    { icon: Car, label: 'Auto Insurance', value: 'Auto Insurance' }
+  ];
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-amber-50 via-orange-50 to-red-50 relative">
@@ -289,22 +397,64 @@ const App = () => {
                     </div>
                   ))}
 
-                  {/* Quick Actions */}
-                  {messages.length === 1 && messages[0].role === 'assistant' && (
-                    <div className="space-y-2">
-                      <p className="text-xs text-amber-700 text-center">Quick options:</p>
-                      <div className="flex flex-col gap-2">
-                        {quickActions.map((action, index) => (
-                          <button
-                            key={index}
-                            onClick={() => handleQuickAction(action.message)}
-                            className="flex items-center gap-2 px-3 py-2 rounded-full bg-amber-100 text-amber-800 border border-amber-200 hover:bg-amber-200 transition-colors text-sm"
-                          >
-                            <action.icon size={14} />
-                            <span>{action.label}</span>
-                          </button>
-                        ))}
-                      </div>
+                  {/* Step-based Options */}
+                  {messages.length > 0 && currentStep <= 3 && (
+                    <div className="space-y-3">
+                      <p className="text-xs text-amber-700 text-center font-medium">
+                        {currentStep === 1 && 'Step 1/3: Select who needs insurance'}
+                        {currentStep === 2 && 'Step 2/3: Select age range'}
+                        {currentStep === 3 && 'Step 3/3: Select insurance type'}
+                      </p>
+                      
+                      {/* Step 1: Who needs insurance */}
+                      {currentStep === 1 && (
+                        <div className="space-y-2">
+                          {whoOptions.map((option, index) => (
+                            <button
+                              key={index}
+                              onClick={() => handleStepSelection(option.value, 1)}
+                              disabled={isLoading}
+                              className="flex items-center gap-3 w-full px-4 py-3 rounded-xl bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 transition-colors text-sm disabled:opacity-50"
+                            >
+                              <option.icon size={16} />
+                              <span>{option.label}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Step 2: Age range */}
+                      {currentStep === 2 && (
+                        <div className="space-y-2">
+                          {ageOptions.map((option, index) => (
+                            <button
+                              key={index}
+                              onClick={() => handleStepSelection(option.value, 2)}
+                              disabled={isLoading}
+                              className="flex items-center justify-center w-full px-4 py-3 rounded-xl bg-orange-50 text-orange-800 border border-orange-200 hover:bg-orange-100 transition-colors text-sm disabled:opacity-50"
+                            >
+                              <span>{option.label}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Step 3: Insurance type */}
+                      {currentStep === 3 && (
+                        <div className="space-y-2">
+                          {insuranceTypes.map((option, index) => (
+                            <button
+                              key={index}
+                              onClick={() => handleStepSelection(option.value, 3)}
+                              disabled={isLoading}
+                              className="flex items-center gap-3 w-full px-4 py-3 rounded-xl bg-red-50 text-red-800 border border-red-200 hover:bg-red-100 transition-colors text-sm disabled:opacity-50"
+                            >
+                              <option.icon size={16} />
+                              <span>{option.label}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                   
@@ -330,30 +480,32 @@ const App = () => {
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Input Area */}
-            <div className="border-t border-amber-100 bg-gradient-to-r from-amber-50 to-orange-50 p-3">
-              <div className="flex gap-2 items-end">
-                <div className="flex-1">
-                  <textarea
-                    ref={inputRef}
-                    value={inputMessage}
-                    onChange={(e) => setInputMessage(e.target.value)}
-                    onKeyDown={handleKeyPress}
-                    placeholder="Type your message..."
-                    className="w-full p-3 rounded-xl border border-amber-300 focus:border-orange-400 focus:ring-2 focus:ring-orange-200 resize-none bg-white/80 backdrop-blur-sm transition-all duration-200 text-sm"
-                    rows="2"
-                    disabled={isLoading}
-                  />
+            {/* Input Area - Only show after step 3 is complete */}
+            {currentStep > 3 && (
+              <div className="border-t border-amber-100 bg-gradient-to-r from-amber-50 to-orange-50 p-3">
+                <div className="flex gap-2 items-end">
+                  <div className="flex-1">
+                    <textarea
+                      ref={inputRef}
+                      value={inputMessage}
+                      onChange={(e) => setInputMessage(e.target.value)}
+                      onKeyDown={handleKeyPress}
+                      placeholder="Type your message..."
+                      className="w-full p-3 rounded-xl border border-amber-300 focus:border-orange-400 focus:ring-2 focus:ring-orange-200 resize-none bg-white/80 backdrop-blur-sm transition-all duration-200 text-sm"
+                      rows="2"
+                      disabled={isLoading}
+                    />
+                  </div>
+                  <button
+                    onClick={sendMessage}
+                    disabled={!inputMessage.trim() || isLoading}
+                    className="bg-gradient-to-r from-orange-500 to-red-500 text-white p-3 rounded-xl hover:from-orange-600 hover:to-red-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 hover:scale-105 active:scale-95"
+                  >
+                    <Send size={16} />
+                  </button>
                 </div>
-                <button
-                  onClick={sendMessage}
-                  disabled={!inputMessage.trim() || isLoading}
-                  className="bg-gradient-to-r from-orange-500 to-red-500 text-white p-3 rounded-xl hover:from-orange-600 hover:to-red-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 hover:scale-105 active:scale-95"
-                >
-                  <Send size={16} />
-                </button>
               </div>
-            </div>
+            )}
           </div>
         </div>
       )}
