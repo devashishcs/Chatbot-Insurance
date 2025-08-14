@@ -53,7 +53,7 @@ async def chat_message(conversation_id):
         return jsonify({"error": "Message is required"}), 400
     
     user_message = data['message']
-    
+    print(f"Received message for conversation {conversation_id}: {user_message}")
     # Check if conversation exists
     if conversation_id not in conversation_states:
         return jsonify({"error": "Conversation not found"}), 404

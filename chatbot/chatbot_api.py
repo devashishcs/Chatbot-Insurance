@@ -132,7 +132,7 @@ class InsuranceChatbotAPI:
     async def _extract_info_with_llm(self, state: ChatbotState) -> ChatbotState:
         """Use LLM to extract age and insurance type from user message"""
         user_message = state["user_query"]
-        
+        print(f"Extracting info from message: {user_message}")
         extraction_prompt = ChatPromptTemplate.from_messages([
             SystemMessage(content="""You are an intent and information extraction assistant.
 
@@ -218,7 +218,7 @@ class InsuranceChatbotAPI:
             return "search_docs"
 
         return "collect_info"
-    ## to do - working on this only greet part how may i assist you one!
+    
     async def _ask_followup_with_llm(self, state) -> ChatbotState:
 
         """Use LLM to generate natural follow-up questions"""
@@ -232,30 +232,37 @@ class InsuranceChatbotAPI:
         ])
         
         followup_prompt = ChatPromptTemplate.from_messages([
-            SystemMessage(content="""You are a friendly insurance assistant. 
-            CRITICAL RULES:
-                
-                1. ONLY ask for the missing information: {', '.join(missing_info)}
-                2. DO NOT ask about coverage details, family members, medical conditions, etc.
-                3. Keep it simple and direct
-                4. Available insurance types: health, life, auto
-                5. Insured for options: self, spouse, child, parent
-                6. Only ask for the missing information, nothing else!
-                7. If the intent is "greet" and there's missing info, acknowledge greeting and ask for missing info.
-               
-                Current user info:
-                - Age: {state.get('user_age', 'unknown')}
-                - Insurance type: {state.get('insurance_type', 'unknown')}
-                - Insured For: {state.get('insured_for', 'unknown')}"""),
-                HumanMessage(content=f"""
-                Missing information that I need: {', '.join(missing_info)}
-                Intent: {intent}
-                
-                Conversation history:
-                {history_text}
-                Generate a simple, direct question asking ONLY for the missing information.
-                Do not ask about anything else!""")
-        ])
+        SystemMessage(content="""You are a friendly insurance assistant. 
+    CRITICAL RULES:
+        
+        1. ONLY ask for the missing information: {', '.join(missing_info)}
+        2. DO NOT ask about coverage details, family members, medical conditions, etc.
+        3. Keep it simple and direct
+        4. Available insurance types: health, life, auto
+        5. Insured for options: self, spouse, child, parent
+        6. Only ask for the missing information, nothing else!   
+        7. For FIRST-TIME greetings (when conversation history is empty or minimal), greet warmly and say "How may I assist you today?"
+        8. For SUBSEQUENT greetings (when conversation history exists), acknowledge the greeting briefly and ask for missing info.
+        
+        Current user info:
+        - Age: {state.get('user_age', 'unknown')}
+        - Insurance type: {state.get('insurance_type', 'unknown')}
+        - Insured For: {state.get('insured_for', 'unknown')}"""),
+    HumanMessage(content=f"""
+    Missing information that I need: {', '.join(missing_info)}
+    Intent: {intent}
+    Is this first interaction: {len(history_text.strip()) < 50}
+    
+    Conversation history:
+    {history_text}
+    
+    INSTRUCTIONS:
+    - If intent is "greet" AND this is the first interaction (minimal/no history), respond with warm greeting + "How may I assist you today?"
+    - If intent is "greet" AND this is NOT the first interaction (history exists), acknowledge greeting + ask for missing info
+    - For all other intents, ask for missing information only
+    
+    Generate appropriate response based on above rules.""")
+])
         
         try:
             llm_response = await self.llm.ainvoke(followup_prompt.format_messages())
